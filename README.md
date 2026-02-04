@@ -1,4 +1,4 @@
-# 🧠 SMR++ — Sparse Manifold Regulation Framework
+# Sparse Manifold Regulation Framework
 
 **Adaptive Control of Continuous Representations for Stable Sparsity**
 
