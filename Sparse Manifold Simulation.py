@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""
-Sparse Manifold Regulator (SMR)
-Simulates adaptive thresholding in a diffusive density field using PI control.
-Mathematical Model: 
-- Diffusion: ∂ρ/∂t = D * ∂²ρ/∂w²
-- Sparsity Control: τ(t) = Kp*e(t) + Ki*∫e(t)dt
-"""
+
 
 import argparse
 import numpy as np
@@ -15,115 +9,168 @@ from scipy.linalg import solve_banded
 import tkinter as tk
 from tkinter import messagebox
 
-# Backend configuration
 matplotlib.use("TkAgg")
+np.random.seed()
 
-class ManifoldRegulator:
-    def __init__(self, n=2000, target_silence=0.75):
-        self.n = n
-        self.target_silence = target_silence
-        self.w = np.linspace(-5.0, 5.0, n)
-        self.dw = self.w[1] - self.w[0]
-        
-        # Initial Density (Normal Distribution)
-        self.rho = np.exp(-0.5 * self.w**2)
-        self.rho /= np.sum(self.rho * self.dw)
-        
-        # History Logs
-        self.history = {"sigma": [], "tau": [], "energy": []}
+# ==========================================================
+# SMR++ Configuration
+# ==========================================================
+N = 1800
+W = np.linspace(-6, 6, N)
+DW = W[1] - W[0]
+TARGET = 0.75
+STEPS = 1400
+DT = 0.002
 
-    def _setup_diffusion_matrix(self, dt, sigma_diff):
-        """Sets up the tridiagonal matrix for implicit Crank-Nicolson or Backward Euler."""
-        alpha = sigma_diff * dt / self.dw**2
-        # Banded format: [upper, diag, lower]
-        ab = np.zeros((3, self.n))
-        ab[0, 1:] = -alpha          # Upper
-        ab[1, :] = 1 + 2 * alpha    # Diag
-        ab[2, :-1] = -alpha         # Lower
-        
-        # Neumann Boundary Conditions (Zero flux)
-        ab[1, 0] = 1 + alpha
-        ab[1, -1] = 1 + alpha
-        return ab
+# ----------------------------------------------------------
+# Utilities
+# ----------------------------------------------------------
+def normalize(rho):
+    rho = np.maximum(rho, 0)
+    return rho / np.sum(rho * DW)
 
-    def run(self, steps=1200, dt=0.002, kp=0.15, ki=0.02, sigma_diff=0.05):
-        """Executes the simulation loop."""
-        tau = 1.0
-        integral_error = 0.0
-        ab = self._setup_diffusion_matrix(dt, sigma_diff)
+def entropy(p):
+    p = p[p > 1e-12]
+    return -np.sum(p * np.log(p))
 
-        for _ in range(steps):
-            # 1. Measure Sparsity (Sigma)
-            active_mask = (np.abs(self.w) > tau)
-            active_mass = np.sum(self.rho[active_mask] * self.dw)
-            sigma = 1.0 - active_mass
-            
-            # 2. Entropy Energy Calculation
-            energy = 0.0
-            if active_mass > 1e-9: energy -= active_mass * np.log(active_mass)
-            if sigma > 1e-9: energy -= sigma * np.log(sigma)
-            
-            # 3. PI Control Update for Threshold Tau
-            error = self.target_silence - sigma
-            integral_error += error * dt
-            tau = max(0.01, tau + (kp * error + ki * integral_error))
-            
-            # 4. Implicit Diffusion Step
-            self.rho = solve_banded((1, 1), ab, self.rho)
-            
-            # 5. Numerical Clean-up
-            self.rho = np.maximum(self.rho, 0)
-            self.rho /= np.sum(self.rho * self.dw)
-            
-            # Record keeping
-            self.history["sigma"].append(sigma)
-            self.history["tau"].append(tau)
-            self.history["energy"].append(energy)
+def diffusion_matrix(D):
+    a = D * DT / DW**2
+    ab = np.zeros((3, N))
+    ab[0,1:] = -a
+    ab[1,:]  = 1 + 2*a
+    ab[2,:-1]= -a
+    ab[1,0] = ab[1,-1] = 1 + a
+    return ab
 
-        return tau
+# ----------------------------------------------------------
+# SMR++ Controllers
+# ----------------------------------------------------------
+def smr_controller(rho, tau, integ):
+    active = np.sum(rho[np.abs(W) > tau] * DW)
+    sigma = 1 - active
+    e = TARGET - sigma
+    integ += e * DT
+    tau = max(0.02, tau + 0.18*e + 0.03*integ)
+    return tau, sigma, integ
 
-    def plot(self):
-        """Generates the 4-panel analysis figure."""
-        fig, axes = plt.subplots(4, 1, figsize=(10, 12))
-        h = self.history
-        t_axis = np.arange(len(h["sigma"]))
+def soft_threshold(rho, lam=1.4):
+    return normalize(np.exp(-lam*np.abs(W)) * rho)
 
-        # ρ(w)
-        axes[0].fill_between(self.w, self.rho, color='royalblue', alpha=0.3)
-        axes[0].plot(self.w, self.rho, color='blue', label="Density ρ(w)")
-        axes[0].axvline(h["tau"][-1], color='red', linestyle="--", label="Final τ")
-        axes[0].axvline(-h["tau"][-1], color='red', linestyle="--")
-        axes[0].set_title("Manifold Density Equilibrium")
-        axes[0].legend()
+def hard_cut(rho, tau=1.2):
+    rho[np.abs(W) < tau] = 0
+    return normalize(rho)
 
-        # σ(t)
-        axes[1].plot(t_axis, h["sigma"], color='green')
-        axes[1].axhline(self.target_silence, color='black', ls="--")
-        axes[1].set_title("Sparsity Regulation (Target vs Actual)")
+# ----------------------------------------------------------
+# Simulation Engine
+# ----------------------------------------------------------
+class SMRSimulation:
+    def __init__(self, method="SMR"):
+        self.method = method
+        self.rho = normalize(np.exp(-0.5*W**2))
+        self.tau = 1.0
+        self.integ = 0.0
+        self.sigmas = []
+        self.entropies = []
 
-        # τ(t)
-        axes[2].plot(t_axis, h["tau"], color='orange')
-        axes[2].set_title("Threshold Evolution")
+    def step(self):
+        if self.method == "SMR":
+            self.tau, sigma, self.integ = smr_controller(self.rho, self.tau, self.integ)
+        elif self.method == "SOFT":
+            self.rho = soft_threshold(self.rho)
+            sigma = np.sum(self.rho[np.abs(W)<1]*DW)
+        elif self.method == "HARD":
+            self.rho = hard_cut(self.rho)
+            sigma = np.sum(self.rho[np.abs(W)<1]*DW)
+        else:
+            sigma = np.sum(self.rho[np.abs(W)<1]*DW)
 
-        # H(t)
-        axes[3].plot(t_axis, h["energy"], color='purple')
-        axes[3].set_title("System Entropy Energy")
-        
-        plt.tight_layout()
-        plt.show()
+        # Adaptive diffusion
+        D = 0.03 + 0.25*(1-sigma)
+        ab = diffusion_matrix(D)
+        self.rho = solve_banded((1,1), ab, self.rho)
+        self.rho = normalize(self.rho)
 
+        return sigma, entropy(self.rho)
+
+    def run(self):
+        for k in range(STEPS):
+            sigma, ent = self.step()
+            if k == STEPS//2:
+                # Mid-run noise perturbation
+                self.rho += 0.02*np.random.randn(N)
+                self.rho = normalize(self.rho)
+            self.sigmas.append(sigma)
+            self.entropies.append(ent)
+        return self.rho, np.array(self.sigmas), np.array(self.entropies)
+
+# ----------------------------------------------------------
+# GUI Notification
+# ----------------------------------------------------------
 def notify(msg):
     root = tk.Tk(); root.withdraw()
-    messagebox.showinfo("SMR Status", msg)
+    messagebox.showinfo("SMR++ Status", msg)
     root.destroy()
 
+# ----------------------------------------------------------
+# Main Execution
+# ----------------------------------------------------------
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run Sparse Manifold Simulation")
-    parser.add_argument("--silence", type=float, default=0.75, help="Target silence ratio (0-1)")
+    parser = argparse.ArgumentParser(description="Run SMR++ Sparse Manifold Simulation")
+    parser.add_argument("--silence", type=float, default=TARGET, help="Target sparsity")
     args = parser.parse_args()
+    TARGET = args.silence
 
-    sim = ManifoldRegulator(target_silence=args.silence)
-    final_tau = sim.run()
-    
-    notify(f"Simulation Converged\nFinal Threshold: {final_tau:.4f}\nTarget Silence: {args.silence}")
-    sim.plot()
+    methods = ["NONE","SMR","SOFT","HARD"]
+    results = {}
+    for m in methods:
+        sim = SMRSimulation(method=m)
+        rho, sigmas, entropies = sim.run()
+        results[m] = (rho, sigmas, entropies)
+
+    # ----------------------------------------------------------
+    # Visualization
+    # ----------------------------------------------------------
+    fig, axes = plt.subplots(3,1, figsize=(12,12))
+
+    # Final Density Profiles
+    for m in methods:
+        axes[0].plot(W, results[m][0], label=m)
+    axes[0].set_title("Final Manifold Density Profiles")
+    axes[0].set_xlabel("Manifold Coordinate w")
+    axes[0].set_ylabel("Density ρ(w)")
+    axes[0].legend()
+    axes[0].grid(True)
+
+    # Sparsity Convergence
+    for m in methods:
+        axes[1].plot(results[m][1], label=m)
+    axes[1].axhline(TARGET, ls="--", c="k", label="Target Sparsity")
+    axes[1].set_title("Sparsity Convergence over Time")
+    axes[1].set_xlabel("Time Step")
+    axes[1].set_ylabel("Sparsity σ(t)")
+    axes[1].legend()
+    axes[1].grid(True)
+
+    # Entropy / Stability
+    for m in methods:
+        axes[2].plot(results[m][2], label=m)
+    axes[2].set_title("Entropy (Lyapunov-like Stability)")
+    axes[2].set_xlabel("Time Step")
+    axes[2].set_ylabel("Entropy H(t)")
+    axes[2].legend()
+    axes[2].grid(True)
+
+    plt.tight_layout()
+    plt.show()
+
+    # ----------------------------------------------------------
+    # Summary Metrics
+    # ----------------------------------------------------------
+    msg_lines = ["=== FINAL METRICS ==="]
+    for m in methods:
+        sigma = results[m][1][-1]
+        ent = results[m][2][-1]
+        msg_lines.append(f"{m:6} sigma={sigma:.4f}   entropy={ent:.4f}")
+    msg = "\n".join(msg_lines)
+    print("\n" + msg)
+    notify(f"Simulation Completed\n\n{msg}")
