@@ -92,10 +92,6 @@ Evaluates **energy efficiency** and **model convergence** across **Language Mode
 4. **Byzantine Resilience:**
    The **geometric median** consensus mechanism is robust to **up to 50% malicious nodes**, making it ideal for **decentralized FL**.
 
-5. **Commercialization Potential:**
-   - **Patent-ready** for gated FL mechanisms.
-   - **Hardware-aware** design for ASIC/GPU deployment.
-   - **Low-resource** focus aligns with **ER’s goal of dismantling the compute wall**.
 
 ---
 
