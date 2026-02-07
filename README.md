@@ -1,5 +1,4 @@
 # Fixed-Point Byzantine-Resilient Network Emulator
-**Hardware-Aware Benchmarking for Large-Scale Federated Learning (1M–100M Devices)**
 
 This project combines **fixed-point arithmetic (Q16.16)** and **Byzantine-resilient network dynamics** to demonstrate the **future of AI scaling through computational density**—not raw precision. It provides:
 - **Fixed-point ASIC emulation** for deterministic, low-power operations.
